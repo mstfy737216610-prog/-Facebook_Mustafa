@@ -117,6 +117,7 @@ export default function App() {
 
   // Modals
   const [showAddAccountModal, setShowAddAccountModal] = useState<boolean>(false);
+  const [showDirectLoginModal, setShowDirectLoginModal] = useState<boolean>(false);
   const [showAddGroupModal, setShowAddGroupModal] = useState<boolean>(false);
   const [showAddPostModal, setShowAddPostModal] = useState<boolean>(false);
   const [showCookiesModal, setShowCookiesModal] = useState<Account | null>(null);
@@ -125,6 +126,10 @@ export default function App() {
   // Form states
   const [newAccountLabel, setNewAccountLabel] = useState('');
   const [newAccountProxy, setNewAccountProxy] = useState('');
+  const [directEmail, setDirectEmail] = useState('');
+  const [directPassword, setDirectPassword] = useState('');
+  const [directLabel, setDirectLabel] = useState('');
+  const [directLoggingIn, setDirectLoggingIn] = useState(false);
   const [newGroupUrl, setNewGroupUrl] = useState('');
   const [newGroupName, setNewGroupName] = useState('');
   const [newGroupNiche, setNewGroupNiche] = useState('masters');
@@ -245,6 +250,40 @@ export default function App() {
       fetchAllData();
     } catch (e: any) {
       showNotify(e.message, 'error');
+    }
+  };
+
+  const handleDirectLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!directEmail || !directPassword) return;
+    setDirectLoggingIn(true);
+    showNotify('جاري فتح المتصفح وتسجيل الدخول واستخراج الكوكيز تلقائياً...', 'info');
+
+    try {
+      const res = await fetch('/api/accounts/direct-capture', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: directEmail,
+          password: directPassword,
+          label: directLabel || `حساب (${directEmail})`,
+        }),
+      }).then((r) => r.json());
+
+      if (res.ok) {
+        showNotify(res.message);
+        setShowDirectLoginModal(false);
+        setDirectEmail('');
+        setDirectPassword('');
+        setDirectLabel('');
+        fetchAllData();
+      } else {
+        showNotify(res.error || 'فشل التقاط الكوكيز التلقائي', 'error');
+      }
+    } catch (e: any) {
+      showNotify(e.message, 'error');
+    } finally {
+      setDirectLoggingIn(false);
     }
   };
 
@@ -904,20 +943,51 @@ export default function App() {
         {/* ================= TAB: ACCOUNTS ================= */}
         {currentTab === 'accounts' && (
           <div className="space-y-6">
-            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-              <div>
-                <h2 className="text-xl font-bold text-white">إدارة حسابات فيسبوك والجلسات</h2>
-                <p className="text-xs text-slate-400 mt-0.5">
-                  أضف حساباتك وارفع ملف الكوكيز المستخرج من المتصفح (JSON أو Netscape). النظام يطبع الكوكيز تلقائياً لـ Playwright.
-                </p>
+            {/* Banner explaining the Mobile Submission Fix & Direct Cookie Extraction */}
+            <div className="bg-gradient-to-r from-emerald-950/40 via-teal-950/30 to-slate-900 border border-emerald-800/40 rounded-2xl p-4 flex flex-col md:flex-row items-start md:items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center font-bold">
+                  <ShieldCheck className="w-5 h-5" />
+                </div>
+                <div>
+                  <h4 className="text-sm font-bold text-white">تم إصلاح مشكلة زر "نشر" في الموبايل (Termux) مع استخراج الكوكيز المباشر</h4>
+                  <p className="text-xs text-slate-300">
+                    تم حل مشكلة DOM shifts بتفعيل النقر الثلاثي (Tap + Force Click + DOM Pointer/Touch Events) وإطلاق أحداث React لتمكين زر النشر، مع إمكانية حفظ الكوكيز مباشرة من المتصفح.
+                  </p>
+                </div>
               </div>
               <button
-                onClick={() => setShowAddAccountModal(true)}
-                className="flex items-center gap-2 bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-xl text-sm font-semibold shadow-md transition cursor-pointer"
+                onClick={() => setShowDirectLoginModal(true)}
+                className="flex items-center gap-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white px-4 py-2 rounded-xl text-xs font-semibold shadow-md transition cursor-pointer whitespace-nowrap"
               >
-                <Plus className="w-4 h-4" />
-                <span>إضافة حساب جديد</span>
+                <Key className="w-3.5 h-3.5" />
+                <span>تسجيل دخول وحفظ الكوكيز مباشرة</span>
               </button>
+            </div>
+
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+              <div>
+                <h2 className="text-xl font-bold text-white">قائمة حسابات فيسبوك المربوطة</h2>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  الحسابات النشطة مع الكوكيز الخاصة بها. يمكنك استخراج الكوكيز تلقائياً أو رفعها يدوياً.
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setShowDirectLoginModal(true)}
+                  className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-500 text-white px-3.5 py-2 rounded-xl text-xs font-semibold shadow-md transition cursor-pointer"
+                >
+                  <Key className="w-3.5 h-3.5" />
+                  <span>دخول مباشر وتصدير الكوكيز</span>
+                </button>
+                <button
+                  onClick={() => setShowAddAccountModal(true)}
+                  className="flex items-center gap-2 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 px-3.5 py-2 rounded-xl text-xs font-semibold shadow-md transition cursor-pointer"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>إضافة حساب يدوياً</span>
+                </button>
+              </div>
             </div>
 
             {/* Accounts Table / Cards */}
@@ -1989,6 +2059,95 @@ export default function App() {
                 </button>
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* ================= MODAL: DIRECT LOGIN & COOKIE CAPTURE ================= */}
+      {showDirectLoginModal && (
+        <div className="fixed inset-0 bg-black/75 backdrop-blur-xs flex items-center justify-center z-50 p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 w-full max-w-md shadow-2xl space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div className="flex items-center gap-2">
+                <Key className="w-5 h-5 text-emerald-400" />
+                <h3 className="font-bold text-white text-lg">تسجيل دخول واستخراج الكوكيز مباشرة</h3>
+              </div>
+              <button
+                onClick={() => setShowDirectLoginModal(false)}
+                className="text-slate-400 hover:text-white cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-300 leading-relaxed bg-emerald-950/30 border border-emerald-900/40 p-3 rounded-xl">
+              💡 <span className="font-semibold text-emerald-300">بدون نسخ ولصق يدوي:</span> يقوم النظام بفتح المتصفح وتسجيل الدخول واستخراج الكوكيز مباشرة من جلسة فيسبوك وتطبيعها وحفظها تلقائياً.
+            </p>
+
+            <form onSubmit={handleDirectLogin} className="space-y-3.5 text-xs">
+              <div>
+                <label className="text-slate-300 font-semibold mb-1 block">اسم الحساب التوضيحي (اختياري)</label>
+                <input
+                  type="text"
+                  placeholder="مثال: حسابي الرئيسي للنشر"
+                  value={directLabel}
+                  onChange={(e) => setDirectLabel(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-white focus:outline-none focus:border-emerald-500"
+                />
+              </div>
+
+              <div>
+                <label className="text-slate-300 font-semibold mb-1 block">البريد الإلكتروني أو رقم الهاتف لفيسبوك *</label>
+                <input
+                  type="text"
+                  placeholder="example@mail.com أو 0770..."
+                  value={directEmail}
+                  onChange={(e) => setDirectEmail(e.target.value)}
+                  required
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-white focus:outline-none focus:border-emerald-500"
+                />
+              </div>
+
+              <div>
+                <label className="text-slate-300 font-semibold mb-1 block">كلمة المرور *</label>
+                <input
+                  type="password"
+                  placeholder="••••••••"
+                  value={directPassword}
+                  onChange={(e) => setDirectPassword(e.target.value)}
+                  required
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-white focus:outline-none focus:border-emerald-500"
+                />
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setShowDirectLoginModal(false)}
+                  disabled={directLoggingIn}
+                  className="px-4 py-2 bg-slate-800 text-slate-300 rounded-xl font-medium cursor-pointer"
+                >
+                  إلغاء
+                </button>
+                <button
+                  type="submit"
+                  disabled={directLoggingIn}
+                  className="px-5 py-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white rounded-xl font-semibold flex items-center gap-2 cursor-pointer shadow-md shadow-emerald-600/20"
+                >
+                  {directLoggingIn ? (
+                    <>
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      <span>جاري الدخول والاستخراج...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Key className="w-3.5 h-3.5" />
+                      <span>دخول واستخراج الكوكيز</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

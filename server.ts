@@ -312,6 +312,57 @@ app.post('/api/accounts/:id/cookies', (req: Request, res: Response) => {
   }
 });
 
+app.post('/api/accounts/direct-capture', async (req: Request, res: Response) => {
+  try {
+    const { id, label, email, password, proxy } = req.body;
+    if (!email || !password) {
+      return res.status(400).json({ ok: false, error: 'البريد الإلكتروني وكلمة المرور مطلوبان' });
+    }
+
+    const accId = id || `fb_${Math.random().toString(36).substring(2, 10)}`;
+    const accLabel = label || `حساب (${email})`;
+
+    // Run python auto_login script in headless mode
+    const escapedEmail = email.replace(/"/g, '\\"');
+    const escapedPassword = password.replace(/"/g, '\\"');
+    const cmd = `python3 Facebook_Bot/auto_login.py "${accId}" "${escapedEmail}" "${escapedPassword}" --headless`;
+
+    const { stdout, stderr } = await execAsync(cmd, { timeout: 120000 });
+    console.log('Auto login output:', stdout);
+
+    const cookiesFile = path.join(SESSIONS_DIR, accId, 'cookies.json');
+    if (fs.existsSync(cookiesFile)) {
+      const cookies = JSON.parse(fs.readFileSync(cookiesFile, 'utf-8'));
+      if (cookies.length > 0) {
+        db.prepare(`
+          INSERT INTO accounts (id, label, username, proxy, enabled, status, cookies_valid, created_at)
+          VALUES (?, ?, ?, ?, 1, 'active', 1, ?)
+          ON CONFLICT(id) DO UPDATE SET
+            label = excluded.label,
+            username = excluded.username,
+            cookies_valid = 1,
+            status = 'active'
+        `).run(accId, accLabel, email, proxy || null, Date.now() / 1000);
+
+        return res.json({
+          ok: true,
+          message: `تم تسجيل الدخول واستخراج ${cookies.length} كوكي وحفظها مباشرة من المتصفح!`,
+          cookiesCount: cookies.length,
+          id: accId,
+        });
+      }
+    }
+
+    return res.status(400).json({
+      ok: false,
+      error: 'فشل التقاط الكوكيز تلقائياً. تأكد من صحة الحساب وكلمة المرور أو عدم وجود كود تحقق 2FA.',
+      output: stdout || stderr,
+    });
+  } catch (error: any) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
 app.post('/api/accounts/:id/test', (req: Request, res: Response) => {
   try {
     const accId = req.params.id;
@@ -337,7 +388,7 @@ app.post('/api/accounts/:id/test', (req: Request, res: Response) => {
       cookiesCount,
       status: hasCookies && cookiesCount > 0 ? 'جاهز للنشر' : 'يحتاج رفع الكوكيز',
       recommendations: [
-        hasCookies ? 'الكوكيز محملة ومطبعة' : 'يجب رفع ملف cookies.json من المتصفح',
+        hasCookies ? 'الكوكيز محملة ومطبعة' : 'يجب حفظ ملف cookies.json من المتصفح',
         acc.proxy ? 'البروكسي مفعل لحماية الآي بي' : 'ينصح بربط بروكسي سكني لحسابات النشر المكثف',
         'الحد الأقصى الموصى به: 3 منشورات في الساعة لكل حساب',
       ],

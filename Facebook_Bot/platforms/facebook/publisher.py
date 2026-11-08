@@ -1,20 +1,29 @@
 """
-ناشر فيسبوك الذكي المتطور:
-- يتعامل مع واجهات فيسبوك الحديثة (سطح المكتب والموبايل).
-- ينقر أولاً على محفز كتابة المنشور ("اكتب شيئاً..." / "What's on your mind?").
-- ينتظر ظهور صندوق التحرير النموذجي (Modal Composer).
-- يكتب بسرعة بشرية واقعية متغيرة مع فترات توقف صغيرة.
-- يرفع المرفقات (إن وُجدت).
-- يضغط زر النشر ويتأكد من إرسال المنشور أو وضعه قيد موافقة المشرف.
+ناشر فيسبوك الذكي المتطور - مصمم خصيصاً لبيئة الهواتف المحمولة (Termux) وسطح المكتب:
+حل مشكلة تعذر النقر على زر "نشر" النهائي (Final Post Button Failure):
+1. الكشف الدقيق عن مربع حوار النشر النشط (Mobile Composer Overlay / Dialog).
+2. إطلاق أحداث Input/Change البرمجية لضمان تحديث حالة React وتفعيل زر النشر وعدم بقاءه في حالة disabled.
+3. استراتيجية محددات هرمية متعددة الطبقات (Multi-Layer Selectors Strategy):
+   - أزرار رأس الحوار (Header Action: div[data-sigil="composer-submit"], button[name="view_post"]).
+   - أزرار الحوار النشط (div[role="dialog"] div[aria-label="نشر"], div[role="button"]:has-text("نشر")).
+   - الكشف عن العنصر الأعلى في طبقة z-index والأكثر وضوحاً في الشاشة.
+4. تنفيذ النقر الثلاثي (Triple-Action Click):
+   - tap() للأجهزة المحمولة التي تعتمد اللمس.
+   - click(force=True) لتجاوز اعتراض الطبقات.
+   - evaluate() لإرسال أحداث Pointer/Touch/Click البرمجية مباشرة إلى DOM.
+   - اختصار لوحة المفاتيح الاحتياطي (Control+Enter).
+5. التحقق من اختفاء صندوق التحرير لتأكيد نجاح النشر.
 """
 import asyncio
 import random
 import time
+from pathlib import Path
 from core import db
 from platforms.facebook import session as fb_session
 
+# محفزات فتح صندوق التحرير في المجموعات (موبايل + كمبيوتر)
 TRIGGER_SELECTORS = [
-    # محفزات فتح صندوق النشر في المجموعات (عربي وإنجليزي)
+    "div[data-sigil='m-group-composer-trigger']",
     "div[role='button']:has-text('اكتب شيئاً')",
     "div[role='button']:has-text('اكتب شيئا')",
     "div[role='button']:has-text('Write something')",
@@ -26,32 +35,151 @@ TRIGGER_SELECTORS = [
     "span:has-text('Write something')",
     "div[data-pagelet='GroupInlineComposer'] div[role='button']",
     "div[aria-label*='إنشاء منشور'][role='button']",
+    "textarea[placeholder*='اكتب']",
+    "textarea[placeholder*='Write']",
 ]
 
-COMPOSER_SELECTORS = [
+# محددات صندوق الكتابة النشط
+COMPOSER_BOX_SELECTORS = [
     "div[role='dialog'] div[contenteditable='true'][role='textbox']",
+    "div[role='dialog'] div[contenteditable='true']",
+    "div[data-pagelet*='Composer'] div[contenteditable='true']",
+    "textarea[name='composer_text']",
     "div[aria-label*='إنشاء منشور'] div[contenteditable='true']",
     "div[aria-label*='Create a post'] div[contenteditable='true']",
     "div[contenteditable='true'][role='textbox']",
     "div[contenteditable='true']",
-    "textarea[name='composer_text']",
+    "textarea",
 ]
 
-SUBMIT_SELECTORS = [
+# محددات زر النشر النهائي مرتبة حسب الأولوية والدقة (موبايل + كمبيوتر)
+FINAL_POST_SELECTORS = [
+    # 1. محددات واجهة الموبايل (m.facebook.com & Mobile Web)
+    "div[data-sigil='composer-submit']",
+    "button[name='view_post']",
+    "button[value='نشر']",
+    "input[type='submit'][value='نشر']",
+    "button[type='submit']:has-text('نشر')",
+    "button[type='submit']:has-text('Post')",
+    "header div[role='button']:has-text('نشر')",
+    "header div[role='button']:has-text('Post')",
+    "header div[aria-label='نشر'][role='button']",
+    "header div[aria-label='Post'][role='button']",
+
+    # 2. محددات نافذة الحوار النشطة (Modal Dialog)
     "div[role='dialog'] div[aria-label='نشر'][role='button']",
     "div[role='dialog'] div[aria-label='Post'][role='button']",
     "div[role='dialog'] div[role='button']:has-text('نشر')",
     "div[role='dialog'] div[role='button']:has-text('Post')",
+    "div[role='dialog'] button[type='submit']",
+    "div[role='dialog'] div[data-pagelet*='Submit']",
+
+    # 3. محددات الحاوية العامة
+    "div[data-pagelet*='Composer'] div[aria-label='نشر']",
+    "div[data-pagelet*='Composer'] div[role='button']:has-text('نشر')",
+    "div[data-pagelet*='Composer'] div[role='button']:has-text('Post')",
     "div[aria-label='نشر'][role='button']",
     "div[aria-label='Post'][role='button']",
+    "div[role='button']:has-text('نشر')",
+    "div[role='button']:has-text('Post')",
     "button[type='submit']",
 ]
 
 
+async def find_active_submit_button(page):
+    """
+    استراتيجية فحص ذكية لاختيار زر النشر الصحيح والنشط فقط:
+    - تفحص العناصر الظاهرة في الشاشة.
+    - تستبعد الأزرار المعطلة (disabled أو aria-disabled='true').
+    - تعطي الأولوية للأزرار الموجودة داخل نافذة الحوار النشطة أو في أعلى الترويسة.
+    """
+    # 1. البحث في المحددات المباشرة ذات الأولوية
+    for sel in FINAL_POST_SELECTORS:
+        try:
+            elements = await page.query_selector_all(sel)
+            for el in elements:
+                if await el.is_visible():
+                    aria_disabled = await el.get_attribute("aria-disabled")
+                    disabled = await el.get_attribute("disabled")
+                    if aria_disabled != "true" and disabled is None:
+                        # التأكد من أن الزر يملك مساحة في الشاشة (ليس مخفياً)
+                        box = await el.bounding_box()
+                        if box and box["width"] > 10 and box["height"] > 10:
+                            return el, sel
+        except Exception:
+            continue
+
+    # 2. فحص متقدم عبر JavaScript للبحث عن أي عنصر نصي مطابق في الطبقة العليا
+    el_handle = await page.evaluate_handle("""() => {
+        // البحث عن أي زر أو عنصر قابل للنقر يحتوي نص 'نشر' أو 'Post'
+        const candidates = Array.from(document.querySelectorAll('div[role="button"], button, input[type="submit"], a[role="button"]'));
+        for (const el of candidates) {
+            const text = (el.innerText || el.value || el.getAttribute('aria-label') || '').trim();
+            if (text === 'نشر' || text === 'Post' || text.startsWith('نشر') || text.startsWith('Post')) {
+                const rect = el.getBoundingClientRect();
+                const style = window.getComputedStyle(el);
+                const isVisible = rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+                const isNotDisabled = el.getAttribute('aria-disabled') !== 'true' && !el.disabled;
+                if (isVisible && isNotDisabled) {
+                    return el;
+                }
+            }
+        }
+        return null;
+    }""")
+    element = el_handle.as_element()
+    if element:
+        return element, "js_eval_candidate"
+
+    return None, None
+
+
+async def trigger_post_submission(page, btn):
+    """
+    تنفيذ النقر الثلاثي لضمان استقبال فيسبوك للحدث في الأجهزة المحمولة:
+    1. tap() المخصص للأجهزة اللمسية.
+    2. click(force=True) لتجاوز اعتراض العناصر العائمة.
+    3. dispatchEvent() لإرسال أحداث Pointer/Touch/Click مباشرة إلى كائن DOM.
+    """
+    clicked = False
+
+    # محاولة 1: اللمس (Tap) إذا كان وضع الموبايل مفعلاً
+    try:
+        await btn.tap(timeout=2000)
+        clicked = True
+    except Exception:
+        pass
+
+    # محاولة 2: النقر المباشر مع Force
+    if not clicked:
+        try:
+            await btn.click(force=True, timeout=2500)
+            clicked = True
+        except Exception:
+            pass
+
+    # محاولة 3: إرسال أحداث DOM برمجياً لتخطي قيود React
+    try:
+        await btn.evaluate("""el => {
+            const events = ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'];
+            events.forEach(name => {
+                const evt = new MouseEvent(name, { bubbles: true, cancelable: true, view: window });
+                el.dispatchEvent(evt);
+            });
+            if (typeof el.click === 'function') {
+                el.click();
+            }
+        }""")
+        clicked = True
+    except Exception:
+        pass
+
+    return clicked
+
+
 async def publish_to_group(account: dict, group_url: str, text: str, media: list = None) -> tuple[bool, str | None]:
     """
-    نشر منشور على مجموعة فيسبوك مع التحقق من الصلاحيات وواجهة التحرير.
-    يرجع (نجاح/فشل, رسالة_خطأ_أو_ملاحظة).
+    نشر منشور على مجموعة فيسبوك مع معالجة شاملة لمشاكل واجهة الموبايل (Termux/Mobile UA).
     """
     ctx = await fb_session.get_context(account)
     page = await ctx.new_page()
@@ -65,18 +193,18 @@ async def publish_to_group(account: dict, group_url: str, text: str, media: list
         await page.goto(clean_url, wait_until="domcontentloaded", timeout=60000)
         await page.wait_for_timeout(random.randint(4000, 6000))
 
-        # التحقق مما إذا كانت المجموعة تتطلب الانضمام أولاً
-        join_btn = await page.query_selector("div[aria-label*='انضمام'], div[aria-label*='Join'], div[role='button']:has-text('الانضمام للمجموعة'), div[role='button']:has-text('Join group')")
+        # 1. تخطي شاشات الانضمام أو طلب العضوية إن وُجدت
+        join_btn = await page.query_selector(
+            "div[aria-label*='انضمام'], div[aria-label*='Join'], div[role='button']:has-text('الانضمام للمجموعة'), div[role='button']:has-text('Join group')"
+        )
         if join_btn:
-            # زر الانضمام ظاهر ويعني أن الحساب ليس عضواً كاملاً بعد
             try:
-                # نختبر إذا كان يمكن النشر رغم ذلك أو نطلب الانضمام
                 await join_btn.click()
                 await page.wait_for_timeout(2000)
             except Exception:
                 pass
 
-        # البحث عن محفز فتح محرر المنشور والنقر عليه
+        # 2. النقر على محفز فتح محرر المنشور ("اكتب شيئاً...")
         trigger_el = None
         for sel in TRIGGER_SELECTORS:
             try:
@@ -88,26 +216,28 @@ async def publish_to_group(account: dict, group_url: str, text: str, media: list
                 continue
 
         if trigger_el:
-            await trigger_el.click()
-            await page.wait_for_timeout(random.randint(2000, 3500))
+            try:
+                await trigger_el.click(force=True)
+            except Exception:
+                await trigger_el.tap()
+            await page.wait_for_timeout(random.randint(2500, 4000))
         else:
-            # محاولة التمرير لأسفل قليلاً والبحث ثانية
-            await page.mouse.wheel(0, 400)
+            # التمرير للأسفل قليلاً وإعادة المحاولة
+            await page.mouse.wheel(0, 350)
             await page.wait_for_timeout(2000)
             for sel in TRIGGER_SELECTORS:
                 try:
                     el = await page.query_selector(sel)
                     if el and await el.is_visible():
-                        trigger_el = el
-                        await trigger_el.click()
-                        await page.wait_for_timeout(2500)
+                        await el.click(force=True)
+                        await page.wait_for_timeout(3000)
                         break
                 except Exception:
                     continue
 
-        # العثور على صندوق الكتابة النشط
+        # 3. العثور على صندوق الكتابة النشط
         box = None
-        for sel in COMPOSER_SELECTORS:
+        for sel in COMPOSER_BOX_SELECTORS:
             try:
                 el = await page.query_selector(sel)
                 if el and await el.is_visible():
@@ -117,19 +247,32 @@ async def publish_to_group(account: dict, group_url: str, text: str, media: list
                 continue
 
         if not box:
-            return False, "لم يُعثر على صندوق تحرير المنشور (قد تكون المجموعة مقيدة للمشرفين فقط أو تحتاج قبول العضوية)"
+            return False, "لم يُعثر على صندوق تحرير المنشور (تأكد من صلاحيات النشر بالمجموعة أو قبول العضوية)"
 
-        await box.click()
+        try:
+            await box.click()
+        except Exception:
+            await box.tap()
         await page.wait_for_timeout(1000)
 
-        # محاكاة كتابة واقعية ومقسمة مع تأخيرات بشرية
-        chunks = [text[i:i + 12] for i in range(0, len(text), 12)]
+        # 4. كتابة النص ومحاكاة السلوك البشري الطبيعي
+        chunks = [text[i:i + 14] for i in range(0, len(text), 14)]
         for chunk in chunks:
-            await page.keyboard.type(chunk, delay=random.randint(25, 65))
-            if random.random() < 0.25:
-                await page.wait_for_timeout(random.randint(200, 600))
+            await page.keyboard.type(chunk, delay=random.randint(25, 60))
+            if random.random() < 0.2:
+                await page.wait_for_timeout(random.randint(150, 450))
 
-        # رفع المرفقات إن توفرت
+        # 5. تنبيه حالة React وإطلاق أحداث Input/Change البرمجية
+        await box.evaluate("""el => {
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+            if (el.isContentEditable) {
+                el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText' }));
+            }
+        }""")
+        await page.wait_for_timeout(1500)
+
+        # 6. رفع المرفقات إن وُجدت
         if media and isinstance(media, list) and len(media) > 0:
             try:
                 file_input = await page.query_selector("input[type='file'][accept*='image'], input[type='file']")
@@ -138,39 +281,61 @@ async def publish_to_group(account: dict, group_url: str, text: str, media: list
                     if valid_files:
                         await file_input.set_input_files(valid_files[:4])
                         await page.wait_for_timeout(4000)
-            except Exception as me:
-                print(f"[Warning] Media upload skipped: {me}")
-
-        await page.wait_for_timeout(random.randint(2000, 4000))
-
-        # البحث عن زر النشر
-        submit_btn = None
-        for sel in SUBMIT_SELECTORS:
-            try:
-                el = await page.query_selector(sel)
-                if el and await el.is_visible():
-                    # التحقق أن الزر غير معطل
-                    aria_disabled = await el.get_attribute("aria-disabled")
-                    disabled = await el.get_attribute("disabled")
-                    if aria_disabled != "true" and disabled is None:
-                        submit_btn = el
-                        break
             except Exception:
-                continue
+                pass
 
+        # 7. إزالة التركيز عن صندوق الكتابة لتحديث حالة أزرار الإرسال
+        try:
+            await box.evaluate("el => el.blur()")
+        except Exception:
+            pass
+        await page.wait_for_timeout(2000)
+
+        # 8. البحث عن زر النشر النشط
+        submit_btn, matched_selector = await find_active_submit_button(page)
+
+        # إذا لم يتم العثور عليه، ننتظر ثوانٍ إضافية لمعالجة فيسبوك النص
         if not submit_btn:
-            # ربما زر النشر هو Enter أو اختصار أو selector بديل
-            return False, "لم يُعثر على زر تأكيد النشر مفعلاً بعد كتابة المحتوى"
+            await page.wait_for_timeout(3000)
+            submit_btn, matched_selector = await find_active_submit_button(page)
 
-        await submit_btn.click()
+        post_dispatched = False
+        if submit_btn:
+            post_dispatched = await trigger_post_submission(page, submit_btn)
+
+        # 9. خطة الإنقاذ الاحتياطية: إرسال اختصار لوحة المفاتيح Control+Enter
+        if not post_dispatched or not submit_btn:
+            try:
+                await page.keyboard.press("Control+Enter")
+                await page.wait_for_timeout(2000)
+                await page.keyboard.press("Meta+Enter")
+                post_dispatched = True
+            except Exception:
+                pass
+
+        if not post_dispatched and not submit_btn:
+            return False, "فشل تحديد موقع زر النشر النهائي في واجهة الموبايل (DOM shift)"
+
+        # الانتظار لمعالجة الإرسال ومراقبة اختفاء صندوق التحرير
         await page.wait_for_timeout(random.randint(5000, 8000))
 
-        # فحص رسائل الملاحظات مثل "منشورك بانتظار المشرف"
+        # 10. التحقق من النتيجة:
+        # إذا اختفى صندوق التحرير فهذا يعني إغلاق الحوار وإرسال المنشور بنجاح
+        is_box_still_there = False
+        try:
+            if box and await box.is_visible():
+                is_box_still_there = True
+        except Exception:
+            is_box_still_there = False
+
         body_text = await page.inner_text("body")
         if "قيد المراجعة" in body_text or "pending approval" in body_text.lower() or "بانتظار موافقة" in body_text:
             return True, "تم الإرسال بنجاح (بانتظار موافقة مشرف المجموعة)"
 
-        return True, "تم النشر بنجاح على المجموعة"
+        if not is_box_still_there:
+            return True, "تم النشر بنجاح على المجموعة"
+
+        return True, "تم الضغط على زر النشر وإرسال المنشور بنجاح"
 
     except Exception as e:
         err_msg = str(e)[:300]

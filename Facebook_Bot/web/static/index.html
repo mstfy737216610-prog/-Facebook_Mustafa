@@ -112,16 +112,26 @@ function showTab(t) { document.querySelectorAll(".tab").forEach(x => x.style.dis
 
 async function loadAccounts() {
   const a = await api("/api/accounts");
-  $("accounts").innerHTML = a.map(x => `<div class="card"><b>${esc(x.label)}</b> <span class="badge ${x.enabled?"on":"off"}">${x.enabled?"مفعّل":"معطّل"}</span>
-    <div class="row">
+  $("accounts").innerHTML = a.map(x => `<div class="card">
+    <div class="row" style="justify-content:space-between">
+      <b>${esc(x.label)}</b>
+      <div>
+        <span class="badge ${x.enabled?"on":"off"}">${x.enabled?"مفعّل":"معطّل"}</span>
+        <span class="badge ${x.cookies_valid?"on":"off"}">${x.cookies_valid?"✅ كوكيز محفوظة":"⚠️ بدون كوكيز"}</span>
+      </div>
+    </div>
+    <div class="row" style="margin-top:10px">
       <button class="btn g" onclick="discover('${x.id}')">🔍 اكتشاف مجموعات</button>
-      <label style="margin:0">رفع كوكيز: <input type="file" id="ck-${x.id}" style="width:auto;display:inline"></label>
-      <button class="btn" onclick="uploadCookies('${x.id}')">رفع</button>
+      <label style="margin:0;cursor:pointer" class="btn">📁 اختيار ملف كوكيز: <input type="file" id="ck-${x.id}" style="display:none" onchange="uploadCookiesFile('${x.id}')"></label>
+      <button class="btn p" onclick="pasteCookiesPrompt('${x.id}')">📋 لصق الكوكيز يدوياً</button>
       <button class="btn r" onclick="delAcc('${x.id}')">حذف</button>
-    </div><div id="dsc-${x.id}"></div></div>`).join("") || "لا حسابات";
+    </div>
+    <div id="dsc-${x.id}" style="margin-top:6px;font-size:12px"></div>
+  </div>`).join("") || "لا توجد حسابات بعد";
 }
 async function addAccount() {
   await api("/api/accounts", {method: "POST", body: {label: $("a-label").value, proxy: $("a-proxy").value || null}});
+  $("a-label").value = ""; $("a-proxy").value = "";
   loadAccounts();
 }
 async function delAcc(id) { if (confirm("حذف؟")) { await api("/api/accounts/" + id, {method: "DELETE"}); loadAccounts(); } }
@@ -131,11 +141,43 @@ async function discover(id) {
   $("dsc-" + id).textContent = r.ok ? `✅ مجموعات جديدة: ${r.new_groups}` : "فشل - تأكد من الكوكيز";
   loadGroups();
 }
-async function uploadCookies(id) {
+async function uploadCookiesFile(id) {
   const f = $("ck-" + id).files[0]; if (!f) return;
   const fd = new FormData(); fd.append("file", f);
-  const r = await fetch("/api/accounts/" + id + "/cookies", {method: "POST", body: fd, headers: {"X-Auth-Token": T}});
-  alert(r.ok ? "حُفظت الكوكيز" : "فشل");
+  $("dsc-" + id).textContent = "⏳ جاري حفظ وتطبيع الكوكيز...";
+  try {
+    const res = await fetch("/api/accounts/" + id + "/cookies", {method: "POST", body: fd, headers: {"X-Auth-Token": T}});
+    const data = await res.json();
+    if (res.ok && data.ok) {
+      alert(`✅ ${data.message || 'تم حفظ الكوكيز بنجاح'}`);
+      loadAccounts();
+    } else {
+      alert(`❌ فشل: ${data.error || 'تأكد من صيغة الملف'}`);
+    }
+  } catch (e) {
+    alert("❌ خطأ أثناء رفع الملف");
+  }
+}
+async function pasteCookiesPrompt(id) {
+  const text = prompt("الصق كوكيز الحساب هنا (صيغة JSON أو Netscape cookies.txt أو c_user=...):");
+  if (!text || !text.trim()) return;
+  $("dsc-" + id).textContent = "⏳ جاري حفظ وتطبيع الكوكيز...";
+  try {
+    const res = await fetch("/api/accounts/" + id + "/cookies", {
+      method: "POST",
+      headers: {"X-Auth-Token": T, "Content-Type": "application/json"},
+      body: JSON.stringify({cookiesContent: text.trim()})
+    });
+    const data = await res.json();
+    if (res.ok && data.ok) {
+      alert(`✅ ${data.message || 'تم حفظ الكوكيز بنجاح'}`);
+      loadAccounts();
+    } else {
+      alert(`❌ فشل: ${data.error || 'الكوكيز غير صالحة'}`);
+    }
+  } catch (e) {
+    alert("❌ خطأ أثناء حفظ الكوكيز");
+  }
 }
 async function loadGroups() {
   const g = await api(`/api/groups?niche=${$("g-niche").value}&status=${$("g-status").value}`);

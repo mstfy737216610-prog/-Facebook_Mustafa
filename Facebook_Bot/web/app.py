@@ -77,15 +77,25 @@ async def del_account(acc_id: str, request: Request):
 
 
 @app.post("/api/accounts/{acc_id}/cookies")
-async def upload_cookies(acc_id: str, request: Request, file: UploadFile):
-    """رفع كوكيز فيسبوك (JSON أو Netscape cookies.txt) وتطبيعها."""
+async def upload_cookies(acc_id: str, request: Request, file: UploadFile = None):
+    """رفع أو لصق كوكيز فيسبوك (JSON أو Netscape cookies.txt أو Header string) وتطبيعها."""
     _auth(request)
-    content = (await file.read()).decode("utf-8", "ignore")
+    content = ""
+    if file:
+        content = (await file.read()).decode("utf-8", "ignore")
+    else:
+        try:
+            body = await request.json()
+            content = body.get("cookies") or body.get("cookiesContent") or ""
+        except Exception:
+            body_bytes = await request.body()
+            content = body_bytes.decode("utf-8", "ignore")
+
     count = import_cookies(acc_id, content)
     if count > 0:
-        db.q("UPDATE accounts SET cookies_valid=1 WHERE id=?", (acc_id,))
-        return {"ok": True, "cookies_count": count}
-    return {"ok": False, "error": "لم يتم العثور على كوكيز صالحة بالملف"}
+        db.q("UPDATE accounts SET cookies_valid=1, status='active' WHERE id=?", (acc_id,))
+        return {"ok": True, "cookies_count": count, "message": f"تم حفظ وتطبيع {count} كوكي بنجاح"}
+    return {"ok": False, "error": "لم يتم العثور على كوكيز صالحة. تأكد من الصيغة (JSON أو cookies.txt أو c_user=...)"}
 
 
 @app.post("/api/accounts/{acc_id}/check")
