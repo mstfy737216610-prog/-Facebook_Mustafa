@@ -202,54 +202,10 @@ def get_logs(limit=150):
 
 
 def seed_defaults():
-    """تعبئة بيانات نموذجية لمكاتب الخدمات الطلابية إن كانت الجداول فارغة."""
-    post_count = q("SELECT COUNT(*) as c FROM posts", one=True)
-    if post_count and post_count["c"] == 0:
-        sample_posts = [
-            {
-                "key": "masters_thesis_01",
-                "niche": "masters",
-                "title": "إعداد وتنسيق رسائل الماجستير والأطروحات العلمية",
-                "text": "📚 لطلبة الماجستير والدراسات العليا الأعزاء:\nيسر مكتبنا الأكاديمي تقديم استشارات بحثية شاملة:\n• المساعدة في اقتراح خطط البحث (البروبوزال) المعتمدة\n• التدقيق اللغوي والإملائي الاحترافي (عربي/إنجليزي)\n• التحليل الإحصائي للبيانات ببرامج SPSS و AMOS\n• فحص وتخفيض نسبة الاقتباس الأدبي (Turnitin) بأمانة تامة\n\n📞 للتواصل المباشر عبر واتساب: 009647700000000\nخدماتنا تضمن السرية التامة والالتزام الصارم بالمواعيد الجامعية."
-            },
-            {
-                "key": "phd_defense_01",
-                "niche": "phd",
-                "title": "دعم متكامل لأبحاث وأطروحات الدكتوراه والنشر في مجلات Scopus",
-                "text": "🎓 باحثي ومرشحي الدكتوراه الكرام:\nنوفر لكم دعماً أكاديمياً متخصصاً بإشراف نخبة من الأساتذة:\n• مراجعة الإطار النظري والدراسات السابقة المعاصرة\n• المساعدة في إعادة صياغة الأوراق البحثية للنشر في مجلات Scopus و Clarivate\n• إعداد العروض التقديمية الاحترافية للسيمنار والمناقشة النهائية\n\nللاستفسار والحجز الفوري: واتساب / تليجرام متوفر 24/7."
-            },
-            {
-                "key": "student_services_01",
-                "niche": "services",
-                "title": "خدمات طلابية جامعية شاملة: تقارير، أبحاث تخرج، وترجمة",
-                "text": "🌟 لجميع طلبة الكليات والجامعات:\nأنجز متطلباتك الدراسية بأعلى درجات الإتقان وبأسعار طلابية مخفضة:\n1. إعداد مشاريع التخرج والتقارير العلمية التخصصية\n2. الترجمة الأكاديمية الدقيقة والمعتمدة\n3. تصميم البوسترات العلمية والعروض التقديمية PowerPoint\n4. تلخيص الكتب والمقررات الدراسية بطريقة مبسطة\n\nتواصل معنا الآن واضمن تفوقك الدراسي!"
-            }
-        ]
-        for sp in sample_posts:
-            add_post(sp["key"], sp["niche"], sp["title"], sp["text"])
-
-    group_count = q("SELECT COUNT(*) as c FROM groups", one=True)
-    if group_count and group_count["c"] == 0:
-        sample_groups = [
-            ("https://www.facebook.com/groups/masters.iraq.students", "ملتقى طلبة الماجستير والدراسات العليا في العراق", 48500, "masters", "approved"),
-            ("https://www.facebook.com/groups/phd.researchers.arab", "رابطة باحثي الدكتوراه والرسائل الجامعية", 62000, "phd", "approved"),
-            ("https://www.facebook.com/groups/baghdad.students.services", "خدمات طلبة جامعة بغداد والجامعات العراقية", 39200, "services", "approved"),
-            ("https://www.facebook.com/groups/academic.research.assistance", "استشارات البحوث والتحليل الإحصائي SPSS", 27400, "masters", "approved"),
-            ("https://www.facebook.com/groups/scopus.publishing.group", "مجموعة النشر العلمي في مجلات سكوبس العالمية", 51800, "phd", "approved"),
-            ("https://www.facebook.com/groups/general.college.projects", "مشاريع تخرج وهندسة وحاسبات عام", 18300, "services", "new"),
-        ]
-        for url, name, members, niche, status in sample_groups:
-            q("""INSERT INTO groups (url, name, members, niche, status, discovered_at)
-                 VALUES (?, ?, ?, ?, ?, ?)""", (url, name, members, niche, status, time.time()))
-
-    acc_count = q("SELECT COUNT(*) as c FROM accounts", one=True)
-    if acc_count and acc_count["c"] == 0:
-        save_account({
-            "id": "fb_demo_01",
-            "label": "حساب فيسبوك 1 (المكتب الرئيسي)",
-            "username": "adman_office_1",
-            "proxy": "",
-            "enabled": True,
-            "status": "active",
-            "cookies_valid": True
-        })
+    """تهيئة الجداول بدون إضافة أي حسابات أو مجموعات وهمية (جميع البيانات يضيفها المستخدم يدوياً)."""
+    # تنظيف أي حسابات أو مجموعات تجريبية سابقة
+    try:
+        q("DELETE FROM accounts WHERE id = 'fb_demo_01'")
+        q("DELETE FROM groups WHERE url LIKE '%baghdad.students%' OR url LIKE '%masters.iraq%' OR url LIKE '%phd.researchers%'")
+    except Exception:
+        pass

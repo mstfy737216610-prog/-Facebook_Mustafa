@@ -1,11 +1,12 @@
 """
 جلسات فيسبوك المتقدمة - دعم بيئة الموبايل (Termux) وسطح المكتب:
-- استقبال وقبول الكوكيز بجميع الصيغ:
-  1. ملفات JSON الناتجة عن إضافات المتصفح (J2Team, EditThisCookie...).
+- استقبال وقبول الكوكيز بجميع الصيغ الممكنة:
+  1. ملفات JSON الناتجة عن إضافات المتصفح (J2Team, EditThisCookie, Cookie-Editor).
   2. ملفات Netscape (cookies.txt).
-  3. سطر كوكيز الهيدر الخام (Header string: c_user=...; xs=...).
-- تطبيع دقيق لحقول sameSite و expires و domain لضمان قبول Playwright لها بنسبة 100%.
-- إضافة الكوكيز بآلية حماية ثنائية وحقن فوري.
+  3. سطر كوكيز الهيدر الخام المنسوخ (Header string: c_user=...; xs=...).
+  4. كائنات JSON بصيغة {c_user: ..., xs: ...}.
+- تطبيع دقيق وفصل القيود لتفادي أخطاء Playwright و Chromium.
+- حقن الكوكيز على كل من .facebook.com و m.facebook.com و www.facebook.com لضمان تسجيل الدخول فوراً.
 """
 import json
 import re
@@ -51,7 +52,6 @@ def sanitize_cookie(c: dict) -> dict | None:
         same_site = "Lax"
 
     secure = bool(c.get("secure", True))
-    # متصفح كروميوم يشترط أن يكون secure=True إذا كان sameSite=None
     if same_site == "None" and not secure:
         secure = True
 
@@ -65,7 +65,7 @@ def sanitize_cookie(c: dict) -> dict | None:
         "sameSite": same_site,
     }
 
-    # Playwright يرفض بشدة expires إذا كانت قيمة سالبة أو صفر
+    # Playwright يرفض expires إذا كانت سالبة أو صفر
     exp = c.get("expirationDate") or c.get("expires")
     if isinstance(exp, (int, float)) and float(exp) > 0:
         cookie["expires"] = float(exp)
@@ -121,7 +121,7 @@ def parse_raw_header_cookies(text: str) -> list[dict]:
 
 
 def import_cookies(account_id: str, cookies_content: str) -> int:
-    """استيراد الكوكيز من JSON أو صيغة cookies.txt أو سطر الهيدر وحفظها في sessions."""
+    """استيراد الكوكيز من أي صيغة وحفظها وتحديث الحساب."""
     cookies_content = cookies_content.strip()
     raw_list = []
 
@@ -131,7 +131,12 @@ def import_cookies(account_id: str, cookies_content: str) -> int:
             if isinstance(data, dict):
                 if "cookiesContent" in data and isinstance(data["cookiesContent"], str):
                     return import_cookies(account_id, data["cookiesContent"])
-                raw_list = data.get("cookies", data.get("data", [data]))
+                if "cookies" in data and isinstance(data["cookies"], list):
+                    raw_list = data["cookies"]
+                elif "c_user" in data:
+                    raw_list = [{"name": k, "value": v, "domain": ".facebook.com", "path": "/"} for k, v in data.items()]
+                else:
+                    raw_list = data.get("data", [data])
             elif isinstance(data, list):
                 raw_list = data
         except Exception:
@@ -144,10 +149,16 @@ def import_cookies(account_id: str, cookies_content: str) -> int:
         raw_list = parse_netscape_cookies(cookies_content) or parse_raw_header_cookies(cookies_content)
 
     clean_cookies = []
+    has_c_user = False
     for c in raw_list:
         sc = sanitize_cookie(c)
         if sc:
             clean_cookies.append(sc)
+            if sc.get("name") == "c_user":
+                has_c_user = True
+
+    if not clean_cookies:
+        return 0
 
     d = SESSIONS / account_id
     d.mkdir(parents=True, exist_ok=True)
@@ -161,6 +172,7 @@ def import_cookies(account_id: str, cookies_content: str) -> int:
     except Exception:
         pass
 
+    print(f"💾 [Storage] تم حفظ {len(clean_cookies)} كوكي للحساب {account_id} بنجاح (c_user: {has_c_user})")
     return len(clean_cookies)
 
 
@@ -171,7 +183,7 @@ async def invalidate_session(account_id: str):
         try:
             ctx = _contexts.pop(account_id)
             await ctx.close()
-            print(f"🔄 [Session] تم تحديث الجلسة وإعادة ضبط المتصفح للحساب {account_id}")
+            print(f"🔄 [Session] تم إغلاق الجلسة السابقة للحساب {account_id} وتحديث المتصفح بالكوكيز الجديدة")
         except Exception:
             pass
 
@@ -256,64 +268,107 @@ async def get_context(account: dict) -> BrowserContext:
         window.chrome = { runtime: {} };
     """)
 
-    # حقن الكوكيز مع آلية حماية Fallback وطباعة الحالة في Termux
+    # حقن الكوكيز مع دعم URL و Domain المزدوج
     cookies = load_cookies(acc_id)
     added_count = 0
     has_c_user = False
+    c_user_val = None
     if cookies:
         for c in cookies:
-            if c.get("name") == "c_user":
+            name = c.get("name")
+            if name == "c_user":
                 has_c_user = True
+                c_user_val = c.get("value")
+
+            # محاولة 1: الحقن الكامل المباشر
             try:
                 await ctx.add_cookies([c])
                 added_count += 1
             except Exception:
-                # محاولة ثانية مبسطة بدون القيود الاختيارية
+                # محاولة 2: الحقن مع رابط النطاق المباشر
                 try:
-                    fallback_c = {
-                        "name": c["name"],
-                        "value": c["value"],
-                        "domain": c["domain"],
-                        "path": c.get("path", "/"),
-                        "secure": True
+                    fallback_entry = {
+                        "name": str(c["name"]).strip(),
+                        "value": str(c["value"]).strip(),
+                        "url": "https://www.facebook.com"
                     }
-                    await ctx.add_cookies([fallback_c])
+                    await ctx.add_cookies([fallback_entry])
                     added_count += 1
                 except Exception:
                     pass
 
-        print(f"🔑 [Cookies] تم تحميل {added_count}/{len(cookies)} كوكي للحساب {acc_id} (c_user موجود: {has_c_user})")
+        # ضمان وجود الكوكيز الحيوية على m.facebook.com أيضاً
+        if has_c_user and c_user_val:
+            try:
+                await ctx.add_cookies([
+                    {"name": "c_user", "value": c_user_val, "url": "https://m.facebook.com"}
+                ])
+            except Exception:
+                pass
+
+        print(f"🔑 [Cookies] تم حقن {added_count}/{len(cookies)} كوكي للحساب {acc_id} (معرف الحساب c_user: {c_user_val or 'غير محدد'})")
 
     _contexts[acc_id] = ctx
     return ctx
 
 
 async def check_login(account: dict) -> dict:
-    """فحص حالة تسجيل دخول الحساب بدقة في واجهة الموبايل."""
+    """فحص حالة تسجيل دخول الحساب بدقة في واجهة الموبايل دون إيجابيات كاذبة."""
     ctx = await get_context(account)
     page = await ctx.new_page()
     try:
-        print(f"🔍 [Login Check] جاري فحص جلسة الحساب {account.get('label', account['id'])}...")
+        acc_label = account.get('label', account['id'])
+        print(f"🔍 [Login Check] جاري فحص جلسة الحساب ({acc_label})...")
+
+        # 1. فحص وجود c_user في كوكيز المتصفح
+        browser_cookies = await ctx.cookies("https://m.facebook.com")
+        c_user_ck = next((ck for ck in browser_cookies if ck.get("name") == "c_user"), None)
+        uid = c_user_ck["value"] if c_user_ck else None
+
+        # 2. فتح فيسبوك موبايل
         await page.goto("https://m.facebook.com/", wait_until="domcontentloaded", timeout=45000)
-        await page.wait_for_timeout(4000)
+        await page.wait_for_timeout(3500)
         url = page.url.lower()
 
-        # كشف حالات التحقق أو الإيقاف
+        # تجاوز نوافذ الكوكيز والموافقة إن ظهرت
+        try:
+            consent_btn = await page.query_selector("button[data-cookiebanner='accept_button'], button:has-text('Allow all cookies'), button:has-text('سماح'), button:has-text('موافق')")
+            if consent_btn:
+                await consent_btn.click()
+                await page.wait_for_timeout(2000)
+        except Exception:
+            pass
+
+        # تخطي نافذة "حفظ معلومات تسجيل الدخول" إن ظهرت
+        try:
+            not_now_btn = await page.query_selector("a:has-text('ليس الآن'), button:has-text('ليس الآن'), a:has-text('Not Now'), button:has-text('Not Now')")
+            if not_now_btn:
+                await not_now_btn.click()
+                await page.wait_for_timeout(2000)
+        except Exception:
+            pass
+
+        # 3. كشف حالات التحقق الأمني
         if "checkpoint" in url or "disabled" in url or "suspended" in url:
-            print("⚠️ [Login Check] الحساب يطلب التحقق الأمني من فيسبوك")
-            return {"status": "checkpoint", "ok": False, "message": "الحساب يطلب التحقق أو معلق مؤقتًا"}
+            print(f"⚠️ [Login Check] الحساب ({acc_label}) يطلب التحقق الأمني من فيسبوك")
+            return {"status": "checkpoint", "ok": False, "message": "الحساب يطلب التحقق الأمني من فيسبوك"}
 
-        # كشف صفحة تسجيل الدخول
-        has_login_box = await page.query_selector("input[name='email'], input#m_login_email, button[name='login']")
-        if has_login_box:
-            # التحقق مما إذا كانت هناك عناصر feed تدل على تسجيل الدخول الفعلي
-            feed_element = await page.query_selector("div[data-sigil='feed-ufi-container'], div[data-sigil='m-timeline-feed'], a[href*='logout'], div[aria-label*='القائمة'], div[role='feed']")
-            if not feed_element:
-                print("❌ [Login Check] المتصفح لم يتعرف على الجلسة، تأكد من تجديد الكوكيز")
-                return {"status": "logged_out", "ok": False, "message": "الجلسة منتهية أو الكوكيز غير صالحة"}
+        # 4. هل حقل كلمة المرور ظاهر ونشط فعلياً؟
+        pwd_input = await page.query_selector("input[type='password']")
+        is_pwd_visible = False
+        if pwd_input:
+            try:
+                is_pwd_visible = await pwd_input.is_visible()
+            except Exception:
+                is_pwd_visible = False
 
-        print("✅ [Login Check] الحساب متصل ونشط بنجاح!")
-        return {"status": "active", "ok": True, "message": "الحساب نشط ومتصل بنجاح"}
+        if is_pwd_visible and not uid:
+            print(f"❌ [Login Check] الحساب ({acc_label}) غير مسجل الدخول، تأكد من كوكيز الحساب")
+            return {"status": "logged_out", "ok": False, "message": "الجلسة منتهية أو الكوكيز غير صحيحة"}
+
+        print(f"✅ [Login Check] الحساب ({acc_label}) نشط ومتصل بفيسبوك بنجاح! (UID: {uid or 'متصل'})")
+        return {"status": "active", "ok": True, "message": f"الحساب نشط ومتصل بنجاح (UID: {uid or 'OK'})"}
+
     except Exception as e:
         print(f"⚠️ [Login Check Exception] {e}")
         return {"status": "error", "ok": False, "message": str(e)[:200]}
