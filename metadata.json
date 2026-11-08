@@ -1,0 +1,6 @@
+{
+  "name": "AdMan FB - نظام إدارة ونشر فيسبوك الذكي",
+  "description": "منظومة متكاملة لإدارة حسابات فيسبوك، اكتشاف المجموعات وتصنيفها، وإعادة الصياغة بالذكاء الاصطناعي مع مانع الحظر ومحاكي الحملات.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
