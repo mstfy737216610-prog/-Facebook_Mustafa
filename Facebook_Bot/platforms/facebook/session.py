@@ -1,11 +1,11 @@
 """
 جلسات فيسبوك المتقدمة - دعم بيئة الموبايل (Termux) وسطح المكتب:
-- استقبال وقبول الكوكيز بجميع الصيغ الممكنة:
+- استقبال وقبول الكوكيز بجميع الصيغ:
   1. ملفات JSON الناتجة عن إضافات المتصفح (J2Team, EditThisCookie...).
   2. ملفات Netscape (cookies.txt).
-  3. سطر كوكيز الهيدر الخام المنسوخ من المتصفح (Header string: c_user=...; xs=...).
-- تطبيع دقيق لحقول sameSite و domain لضمان قبول Playwright لها بنسبة 100%.
-- إضافة الكوكيز بأمان فردي (Granular Cookie Injection) لضمان عدم رفض كوكيز الجلسة إذا كان هناك كوكي واحد غير متوافق.
+  3. سطر كوكيز الهيدر الخام (Header string: c_user=...; xs=...).
+- تطبيع دقيق لحقول sameSite و expires و domain لضمان قبول Playwright لها بنسبة 100%.
+- إضافة الكوكيز بآلية حماية ثنائية وحقن فوري.
 """
 import json
 import re
@@ -27,7 +27,7 @@ async def get_playwright():
 
 
 def sanitize_cookie(c: dict) -> dict | None:
-    """تطبيع الكوكيز لتوافق Playwright وتجنب الأخطاء الشائعة."""
+    """تطبيع الكوكيز لتوافق Playwright وتجنب أخطاء expires و sameSite."""
     if not isinstance(c, dict):
         return None
     name = c.get("name")
@@ -41,7 +41,7 @@ def sanitize_cookie(c: dict) -> dict | None:
 
     path = str(c.get("path") or "/").strip()
 
-    # معالجة sameSite - Playwright يقبل فقط Strict, Lax, None
+    # معالجة sameSite - Playwright يقبل Strict, Lax, None
     raw_samesite = str(c.get("sameSite", "")).lower().strip()
     if raw_samesite in ("no_restriction", "none"):
         same_site = "None"
@@ -50,26 +50,31 @@ def sanitize_cookie(c: dict) -> dict | None:
     else:
         same_site = "Lax"
 
+    secure = bool(c.get("secure", True))
+    # متصفح كروميوم يشترط أن يكون secure=True إذا كان sameSite=None
+    if same_site == "None" and not secure:
+        secure = True
+
     cookie = {
         "name": str(name).strip(),
         "value": str(value).strip(),
         "domain": domain,
         "path": path,
-        "secure": bool(c.get("secure", True)),
+        "secure": secure,
         "httpOnly": bool(c.get("httpOnly", False)),
         "sameSite": same_site,
     }
 
-    if "expirationDate" in c and isinstance(c["expirationDate"], (int, float)):
-        cookie["expires"] = float(c["expirationDate"])
-    elif "expires" in c and isinstance(c["expires"], (int, float)):
-        cookie["expires"] = float(c["expires"])
+    # Playwright يرفض بشدة expires إذا كانت قيمة سالبة أو صفر
+    exp = c.get("expirationDate") or c.get("expires")
+    if isinstance(exp, (int, float)) and float(exp) > 0:
+        cookie["expires"] = float(exp)
 
     return cookie
 
 
 def parse_netscape_cookies(text: str) -> list[dict]:
-    """تحويل كوكيز Netscape (cookies.txt) إلى كائنات JSON."""
+    """تحويل كوكيز Netscape (cookies.txt) إلى كائنات JSON متوافقة."""
     cookies = []
     for line in text.splitlines():
         line = line.strip()
@@ -78,15 +83,17 @@ def parse_netscape_cookies(text: str) -> list[dict]:
         parts = line.split("\t")
         if len(parts) >= 7:
             domain, flag, path, secure, expiration, name, value = parts[:7]
-            cookies.append({
+            c_dict = {
                 "domain": domain,
                 "path": path,
                 "secure": secure.upper() == "TRUE",
-                "expires": float(expiration) if expiration.isdigit() else -1,
                 "name": name,
                 "value": value,
                 "sameSite": "Lax"
-            })
+            }
+            if expiration.isdigit() and float(expiration) > 0:
+                c_dict["expires"] = float(expiration)
+            cookies.append(c_dict)
     return cookies
 
 
@@ -122,6 +129,8 @@ def import_cookies(account_id: str, cookies_content: str) -> int:
         try:
             data = json.loads(cookies_content)
             if isinstance(data, dict):
+                if "cookiesContent" in data and isinstance(data["cookiesContent"], str):
+                    return import_cookies(account_id, data["cookiesContent"])
                 raw_list = data.get("cookies", data.get("data", [data]))
             elif isinstance(data, list):
                 raw_list = data
@@ -132,7 +141,6 @@ def import_cookies(account_id: str, cookies_content: str) -> int:
     elif "c_user=" in cookies_content or "xs=" in cookies_content:
         raw_list = parse_raw_header_cookies(cookies_content)
     else:
-        # محاولة قراءة Netscape أو هيدر
         raw_list = parse_netscape_cookies(cookies_content) or parse_raw_header_cookies(cookies_content)
 
     clean_cookies = []
@@ -154,6 +162,18 @@ def import_cookies(account_id: str, cookies_content: str) -> int:
         pass
 
     return len(clean_cookies)
+
+
+async def invalidate_session(account_id: str):
+    """إغلاق الجلسة القديمة في الذاكرة لضمان استخدام الكوكيز الجديدة فوراً."""
+    global _contexts
+    if account_id in _contexts:
+        try:
+            ctx = _contexts.pop(account_id)
+            await ctx.close()
+            print(f"🔄 [Session] تم تحديث الجلسة وإعادة ضبط المتصفح للحساب {account_id}")
+        except Exception:
+            pass
 
 
 def load_cookies(account_id: str) -> list[dict]:
@@ -236,14 +256,33 @@ async def get_context(account: dict) -> BrowserContext:
         window.chrome = { runtime: {} };
     """)
 
-    # حقن الكوكيز بشكل فردي ومحمي لضمان تحميل جميع كوكيز الجلسة دون أي انهيار
+    # حقن الكوكيز مع آلية حماية Fallback وطباعة الحالة في Termux
     cookies = load_cookies(acc_id)
+    added_count = 0
+    has_c_user = False
     if cookies:
         for c in cookies:
+            if c.get("name") == "c_user":
+                has_c_user = True
             try:
                 await ctx.add_cookies([c])
+                added_count += 1
             except Exception:
-                pass
+                # محاولة ثانية مبسطة بدون القيود الاختيارية
+                try:
+                    fallback_c = {
+                        "name": c["name"],
+                        "value": c["value"],
+                        "domain": c["domain"],
+                        "path": c.get("path", "/"),
+                        "secure": True
+                    }
+                    await ctx.add_cookies([fallback_c])
+                    added_count += 1
+                except Exception:
+                    pass
+
+        print(f"🔑 [Cookies] تم تحميل {added_count}/{len(cookies)} كوكي للحساب {acc_id} (c_user موجود: {has_c_user})")
 
     _contexts[acc_id] = ctx
     return ctx
@@ -254,21 +293,29 @@ async def check_login(account: dict) -> dict:
     ctx = await get_context(account)
     page = await ctx.new_page()
     try:
+        print(f"🔍 [Login Check] جاري فحص جلسة الحساب {account.get('label', account['id'])}...")
         await page.goto("https://m.facebook.com/", wait_until="domcontentloaded", timeout=45000)
         await page.wait_for_timeout(4000)
         url = page.url.lower()
 
         # كشف حالات التحقق أو الإيقاف
         if "checkpoint" in url or "disabled" in url or "suspended" in url:
+            print("⚠️ [Login Check] الحساب يطلب التحقق الأمني من فيسبوك")
             return {"status": "checkpoint", "ok": False, "message": "الحساب يطلب التحقق أو معلق مؤقتًا"}
 
         # كشف صفحة تسجيل الدخول
         has_login_box = await page.query_selector("input[name='email'], input#m_login_email, button[name='login']")
         if has_login_box:
-            return {"status": "logged_out", "ok": False, "message": "الجلسة منتهية أو الكوكيز غير صالحة"}
+            # التحقق مما إذا كانت هناك عناصر feed تدل على تسجيل الدخول الفعلي
+            feed_element = await page.query_selector("div[data-sigil='feed-ufi-container'], div[data-sigil='m-timeline-feed'], a[href*='logout'], div[aria-label*='القائمة'], div[role='feed']")
+            if not feed_element:
+                print("❌ [Login Check] المتصفح لم يتعرف على الجلسة، تأكد من تجديد الكوكيز")
+                return {"status": "logged_out", "ok": False, "message": "الجلسة منتهية أو الكوكيز غير صالحة"}
 
+        print("✅ [Login Check] الحساب متصل ونشط بنجاح!")
         return {"status": "active", "ok": True, "message": "الحساب نشط ومتصل بنجاح"}
     except Exception as e:
+        print(f"⚠️ [Login Check Exception] {e}")
         return {"status": "error", "ok": False, "message": str(e)[:200]}
     finally:
         await page.close()

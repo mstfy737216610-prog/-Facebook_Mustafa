@@ -384,6 +384,8 @@ async def run_campaign_task(post_row: dict, accounts: list, groups: list, settin
 
     for g in groups:
         current_op += 1
+        acc = active_accounts[acc_idx % len(active_accounts)]
+        acc_idx += 1
         print(f"\n\033[94m[+] [{current_op}/{total_ops}] جاري النشر بالحساب ({acc.get('label', acc['id'])}) على المجموعة: {g['url']}\033[0m")
 
         # إعادة صياغة النص بذكاء لكل مجموعة

@@ -86,15 +86,23 @@ async def upload_cookies(acc_id: str, request: Request, file: UploadFile = None)
     else:
         try:
             body = await request.json()
-            content = body.get("cookies") or body.get("cookiesContent") or ""
+            if isinstance(body, dict):
+                content = body.get("cookiesContent") or body.get("cookies") or json.dumps(body)
+                if isinstance(content, (list, dict)):
+                    content = json.dumps(content)
+            elif isinstance(body, list):
+                content = json.dumps(body)
+            else:
+                content = str(body)
         except Exception:
             body_bytes = await request.body()
             content = body_bytes.decode("utf-8", "ignore")
 
     count = import_cookies(acc_id, content)
     if count > 0:
+        await fb_session.invalidate_session(acc_id)
         db.q("UPDATE accounts SET cookies_valid=1, status='active' WHERE id=?", (acc_id,))
-        return {"ok": True, "cookies_count": count, "message": f"تم حفظ وتطبيع {count} كوكي بنجاح"}
+        return {"ok": True, "cookies_count": count, "message": f"تم حفظ وتطبيع {count} كوكي بنجاح وتحديث المتصفح"}
     return {"ok": False, "error": "لم يتم العثور على كوكيز صالحة. تأكد من الصيغة (JSON أو cookies.txt أو c_user=...)"}
 
 
