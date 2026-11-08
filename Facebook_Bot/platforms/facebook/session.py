@@ -192,24 +192,43 @@ async def get_context(account: dict) -> BrowserContext:
     profile_dir = SESSIONS / acc_id / "browser_profile"
     profile_dir.mkdir(parents=True, exist_ok=True)
 
+    # اكتشاف مسار متصفح Chromium في Termux أو النظام تلقائياً
+    import shutil
+    import os
+    executable_path = None
+    termux_chrome = "/data/data/com.termux/files/usr/bin/chromium"
+    if os.path.exists(termux_chrome):
+        executable_path = termux_chrome
+    elif shutil.which("chromium"):
+        executable_path = shutil.which("chromium")
+    elif shutil.which("chromium-browser"):
+        executable_path = shutil.which("chromium-browser")
+
     # إعدادات متصفح الموبايل المحاكي لبيئة Termux وتطبيق فيسبوك ويب
-    ctx = await pw.chromium.launch_persistent_context(
-        str(profile_dir),
-        headless=True,
-        proxy=proxy,
-        viewport={"width": 412, "height": 915},
-        is_mobile=True,
-        has_touch=True,
-        user_agent="Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
-        locale="ar-EG,ar;q=0.9,en-US;q=0.8",
-        timezone_id="Asia/Baghdad",
-        permissions=[],
-        args=[
+    launch_kwargs = {
+        "user_data_dir": str(profile_dir),
+        "headless": True,
+        "proxy": proxy,
+        "viewport": {"width": 412, "height": 915},
+        "is_mobile": True,
+        "has_touch": True,
+        "user_agent": "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
+        "locale": "ar-EG,ar;q=0.9,en-US;q=0.8",
+        "timezone_id": "Asia/Baghdad",
+        "permissions": [],
+        "args": [
+            "--no-sandbox",
+            "--disable-setuid-sandbox",
+            "--disable-dev-shm-usage",
             "--disable-blink-features=AutomationControlled",
             "--disable-features=IsolateOrigins,site-per-process",
             "--disable-web-security",
         ]
-    )
+    }
+    if executable_path:
+        launch_kwargs["executable_path"] = executable_path
+
+    ctx = await pw.chromium.launch_persistent_context(**launch_kwargs)
 
     # إخفاء سمة الأتمتة لمنع كشف المتصفح
     await ctx.add_init_script("""
