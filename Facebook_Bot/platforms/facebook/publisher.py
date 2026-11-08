@@ -292,6 +292,7 @@ async def publish_to_group(account: dict, group_url: str, text: str, media: list
         await page.wait_for_timeout(2000)
 
         # 8. البحث عن زر النشر النشط
+        print("   ↳ 🔍 جاري البحث عن زر النشر النشط في واجهة الموبايل...")
         submit_btn, matched_selector = await find_active_submit_button(page)
 
         # إذا لم يتم العثور عليه، ننتظر ثوانٍ إضافية لمعالجة فيسبوك النص
@@ -301,10 +302,12 @@ async def publish_to_group(account: dict, group_url: str, text: str, media: list
 
         post_dispatched = False
         if submit_btn:
+            print(f"   ↳ 🎯 تم تحديد موقع زر النشر بنجاح ({matched_selector})، جاري النقر...")
             post_dispatched = await trigger_post_submission(page, submit_btn)
 
         # 9. خطة الإنقاذ الاحتياطية: إرسال اختصار لوحة المفاتيح Control+Enter
         if not post_dispatched or not submit_btn:
+            print("   ↳ ⚡ محاولة إرسال المنشور عبر اختصار Control+Enter...")
             try:
                 await page.keyboard.press("Control+Enter")
                 await page.wait_for_timeout(2000)
@@ -314,13 +317,14 @@ async def publish_to_group(account: dict, group_url: str, text: str, media: list
                 pass
 
         if not post_dispatched and not submit_btn:
+            print("   ↳ ❌ تعذر العثور على زر النشر في DOM.")
             return False, "فشل تحديد موقع زر النشر النهائي في واجهة الموبايل (DOM shift)"
 
         # الانتظار لمعالجة الإرسال ومراقبة اختفاء صندوق التحرير
+        print("   ↳ ⏳ جاري انتظار استجابة خوادم فيسبوك وتأكيد الإرسال...")
         await page.wait_for_timeout(random.randint(5000, 8000))
 
         # 10. التحقق من النتيجة:
-        # إذا اختفى صندوق التحرير فهذا يعني إغلاق الحوار وإرسال المنشور بنجاح
         is_box_still_there = False
         try:
             if box and await box.is_visible():
@@ -338,7 +342,10 @@ async def publish_to_group(account: dict, group_url: str, text: str, media: list
         return True, "تم الضغط على زر النشر وإرسال المنشور بنجاح"
 
     except Exception as e:
+        import traceback
         err_msg = str(e)[:300]
+        print(f"\033[91m   ↳ ⚠️ استثناء أثناء النشر: {err_msg}\033[0m")
+        print(f"\033[90m{traceback.format_exc()}\033[0m")
         return False, f"خطأ أثناء النشر: {err_msg}"
     finally:
         try:
@@ -377,8 +384,7 @@ async def run_campaign_task(post_row: dict, accounts: list, groups: list, settin
 
     for g in groups:
         current_op += 1
-        acc = active_accounts[acc_idx % len(active_accounts)]
-        acc_idx += 1
+        print(f"\n\033[94m[+] [{current_op}/{total_ops}] جاري النشر بالحساب ({acc.get('label', acc['id'])}) على المجموعة: {g['url']}\033[0m")
 
         # إعادة صياغة النص بذكاء لكل مجموعة
         rephrased_text = await asyncio.to_thread(
@@ -390,6 +396,11 @@ async def run_campaign_task(post_row: dict, accounts: list, groups: list, settin
 
         ok, msg = await publish_to_group(acc, g["url"], rephrased_text, media)
         db.log_publish(acc["id"], g["url"], post_row["id"], ok, msg)
+
+        if ok:
+            print(f"\033[92m[✓] نجح النشر: {msg}\033[0m")
+        else:
+            print(f"\033[91m[✗] فشل النشر: {msg}\033[0m")
 
         res = {
             "account_id": acc["id"],
@@ -411,6 +422,7 @@ async def run_campaign_task(post_row: dict, accounts: list, groups: list, settin
         if current_op < total_ops:
             jitter = random.randint(5, 30)
             sleep_time = delay_grp + jitter
+            print(f"\033[90m⏳ انتظار أمان لمدة {sleep_time} ثانية قبل المجموعة التالية...\033[0m")
             await asyncio.sleep(sleep_time)
 
     return results
